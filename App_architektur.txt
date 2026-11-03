@@ -1,0 +1,573 @@
+TECHNISCHE BAUANLEITUNG – MVP FÜR NACHLASS- UND VERTRAGSVERWALTUNG
+Stand: 31.10.2026
+Zieldatei: App_architektur.txt
+
+1. ZIEL UND VERBINDLICHER MVP-UMFANG
+=================================
+Eine React-Web-App unterstützt Angehörige nach einem Sterbefall. Sie verwaltet
+mehrere Konten, digitalisiert Kontoauszüge und Sterbeurkunden, erkennt mögliche
+Verträge, recherchiert offizielle Anbieterinformationen und begleitet Kündigungen.
+Familienmitglieder arbeiten mit abgestuften Berechtigungen gemeinsam an einem Fall.
+
+MVP-Funktionen:
+- Ruhiges Schwarz-Weiß-Design mit Kreuz und dezentem Rebzweig ohne Trauben.
+- Anmeldung, Fallverwaltung und Einladungen für Familienmitglieder.
+- Mehrere Konten pro Fall und mehrere Auszüge pro Konto.
+- PDF-, JPG- und PNG-Upload für Kontoauszüge und Sterbeurkunden.
+- Digitalisierung mit anschließender menschlicher Prüfung.
+- Erkennung wiederkehrender Zahlungen und manuelle Vertragsverwaltung.
+- Vertragsübersicht mit Betrag, Zahlungsrhythmus, Status und offiziellen Links.
+- Einzel- und Sammelfreigabe von Kündigungen.
+- Versand für ausdrücklich unterstützte Anbieter sowie Brief-PDF/Portalaufgabe.
+- Quellenbasierter Hilfe-Chat und Checkliste zum Sterbefall.
+- Kontaktdaten des betreuenden Bestatters.
+
+Abgrenzungen:
+- Keine direkte Bankanbindung im MVP; Daten stammen aus hochgeladenen Auszügen.
+- Kein Versprechen einer automatischen Kündigung bei jedem Anbieter.
+- Eine wiederkehrende Zahlung ist zunächst ein Vertragsvorschlag.
+- Eine Sterbeurkunde allein belegt nicht jede erforderliche Vertretungsbefugnis.
+- Ein Kontostand allein ermöglicht keine Vertragserkennung.
+- Als Ausgangsmarkt wird Deutschland angenommen. Fachliche Inhalte und
+  Kündigungsvorlagen werden vor dem Pilot für diesen Markt geprüft.
+
+2. TECHNOLOGIE UND SYSTEMGRENZEN
+===============================
+Frontend und Web-Backend:
+- Next.js mit App Router, React und TypeScript.
+- Tailwind CSS und zugängliche UI-Komponenten, beispielsweise shadcn/ui.
+- React Hook Form und Zod für Formulare und serverseitige Validierung.
+- Next.js Route Handler unter /api für die nachfolgend definierten Endpunkte.
+
+Daten und Anmeldung:
+- Supabase Auth für Anmeldung und Einladungsannahme.
+- PostgreSQL mit versionierten Supabase-Migrationen und Row Level Security (RLS).
+- Supabase Storage mit ausschließlich privaten Dokumenten-Buckets.
+- Geldbeträge als ganzzahlige Minor Units, z. B. 2490 für 24,90 EUR.
+
+Hintergrundverarbeitung:
+- Separater Node.js/TypeScript-Worker; lange Jobs laufen nicht im HTTP-Request.
+- PostgreSQL-basierte Queue, z. B. pg-boss, für Extraktion, Analyse und Versand.
+- Worker auf einem Host mit dauerhaften Prozessen und Datenbankverbindung.
+- PDF.js für PDF-Textextraktion; OCR-/Vision-Adapter für Scans und Fotos.
+- OpenAI-SDK serverseitig für strukturierte Extraktion, Chat und Websuche.
+
+Versand:
+- Austauschbarer E-Mail-Adapter, z. B. Resend, mit verifizierter Absenderdomain.
+- PDF-Erstellung, z. B. mit pdf-lib, für druckbare Kündigungsbriefe.
+- Anbieterportale werden zunächst als manuelle Aufgabe mit offiziellem Link
+  unterstützt. Kein allgemeines automatisiertes Ausfüllen fremder Portale.
+
+Tests und Betrieb:
+- Vitest für fachliche Logik und Integrationsprüfungen.
+- Playwright für die wesentlichen Benutzerabläufe.
+- Strukturierte, von Dokumentinhalten und personenbezogenen Daten bereinigte Logs.
+- Getrennte Entwicklungs-, Staging- und Produktionsumgebungen.
+
+Datenfluss:
+Browser -> Next.js API -> Auth/Rollenprüfung -> PostgreSQL / privater Storage
+                                  |
+                                  +-> Job-Queue -> Worker -> OCR / OpenAI
+                                  |                    +-> E-Mail / PDF
+                                  +-> Anbieterrecherche ohne private Falldaten
+
+Der Browser erhält niemals OpenAI-, Versand- oder Supabase-Service-Schlüssel.
+Die meisten Funktionen benötigen ein Backend; eine reine React-SPA reicht nicht.
+
+3. PROJEKTSTRUKTUR
+==================
+apps/web/
+  src/app/(auth)/                 Anmeldung und Einladungen
+  src/app/(app)/cases/[caseId]/    Alle fallbezogenen Seiten
+  src/app/api/                    HTTP-Endpunkte
+  src/components/ui/              Wiederverwendbare UI-Bausteine
+  src/features/                   Oberfläche nach Fachbereich
+  src/lib/auth/                   Sitzung, Rollen, Fallzugriff
+  src/lib/server/                 Serverdienste; Import mit server-only absichern
+apps/worker/
+  src/jobs/                       Extraktion, Analyse, Recherche, Versand
+packages/domain/
+  src/schemas/                    Zod-Schemas und gemeinsame Typen
+  src/contracts/                  Erkennung, Kosten und Statusregeln
+  src/permissions/                Zentrale Berechtigungsmatrix
+packages/adapters/
+  src/openai/                     Chat, Extraktion und Websuche
+  src/documents/                  PDF, OCR und Dateivalidierung
+  src/mail/                       Versand und Zustellereignisse
+supabase/migrations/              Tabellen, Constraints und RLS
+supabase/seed.sql                 Ausschließlich synthetische Beispieldaten
+tests/fixtures/                   Anonymisierte oder synthetische Dokumente
+docs/                            API-Vertrag, Betrieb und fachliche Freigaben
+
+Gemeinsame Pakete enthalten keine Geheimnisse und erzwingen klare Schnittstellen.
+Web- und Worker-Prozess verwenden dieselben fachlichen Schemas und Statusregeln.
+
+4. DATENMODELL
+==============
+Jede fallbezogene Tabelle enthält case_id und Zeitstempel. Fremdschlüssel oder
+zusätzliche Prüfungen verhindern Beziehungen zwischen unterschiedlichen Fällen.
+IDs sind UUIDs; Datumswerte und Zeitzonen werden explizit modelliert.
+
+profiles
+  user_id, display_name
+
+cases
+  id, deceased_first_name, deceased_last_name, death_date, created_by,
+  lifecycle_status (active/deleting/deleted)
+
+case_members
+  case_id, user_id, role (owner/editor/viewer), can_approve_cancellations
+  UNIQUE(case_id, user_id)
+
+invitations
+  id, case_id, normalized_email, role, token_hash, expires_at,
+  accepted_at, invited_by
+  Einladungen sind einmalig, befristet und an die verifizierte E-Mail gebunden.
+
+bank_accounts
+  id, case_id, label, bank_name, iban_masked, currency,
+  balance_minor nullable, balance_as_of nullable
+  Kontostände werden nur mit Bezugsdatum angezeigt und nicht aus unvollständigen
+  Auszügen als aktueller Gesamtbestand interpretiert.
+
+documents
+  id, case_id, bank_account_id nullable, kind,
+  storage_path, mime_type, size_bytes, sha256,
+  processing_status, review_status, extraction_version, error_code
+  kind: bank_statement/death_certificate/authority_proof/confirmation/other
+
+document_extractions
+  id, case_id, document_id, schema_version, extracted_json,
+  field_evidence_json, reviewed_by, reviewed_at
+  Extraktionsvorschläge bleiben von bestätigten Falldaten unterscheidbar.
+
+statement_imports
+  id, case_id, bank_account_id, document_id, period_start, period_end,
+  completeness_status, reviewed_at
+
+transactions
+  id, case_id, bank_account_id, booking_date, value_date,
+  amount_minor_signed, currency, counterparty, purpose,
+  creditor_id nullable, mandate_reference nullable, normalized_fingerprint,
+  review_status
+  Vorzeichenregel: Abbuchungen negativ, Gutschriften positiv.
+
+transaction_evidence
+  case_id, transaction_id, statement_import_id, page_number, source_row
+  Erhält die Herkunft auch bei mehrfach eingelesenen Buchungen.
+
+contracts
+  id, case_id, provider_id nullable, display_name, category,
+  expected_amount_minor, currency, interval, recognition_score,
+  review_status (suggested/confirmed/rejected), active_state
+  interval: monthly/quarterly/semiannual/annual/irregular/unknown
+
+contract_transactions
+  case_id, contract_id, transaction_id
+  Kontozuordnung ergibt sich aus den verknüpften Buchungen; Verträge können
+  nach manueller Prüfung Buchungen aus mehreren Konten zusammenführen.
+
+providers / provider_sources
+  Anbietername, offizielle Domain, Kündigungsweg, Kontaktziel,
+  benötigte Nachweise, Quellen-URL, retrieved_at, verified_at, verified_by
+  Öffentliche Anbieterdaten sind getrennt von privaten Falldaten gespeichert.
+
+cancellations
+  id, case_id, contract_id, status, delivery_channel,
+  recipient_snapshot, template_version, approved_payload_hash,
+  approved_by, approved_at, sent_at, effective_end_date,
+  confirmation_document_id nullable, idempotency_key
+
+cancellation_events / delivery_attempts
+  Fall, Kündigung, Ereignis, Zeitpunkt, Transportreferenz, Fehlerklasse
+  append-only für nachvollziehbare Übergänge und Versandversuche
+
+tasks
+  id, case_id, type, title, assignee_id, due_date nullable,
+  status, source_url nullable, content_version
+
+funeral_contacts
+  id, case_id, company, contact_name, phone, email, address, notes
+
+chat_threads / chat_messages
+  Fall, Autor, Inhalt, Quellen, Zeitpunkt, Aufbewahrungsdatum
+
+audit_events
+  case_id, actor_id, action, entity_type, entity_id, timestamp,
+  minimale technische Metadaten; keine kompletten Dokumente oder Geheimnisse
+
+5. ROLLEN UND SICHERHEIT
+=======================
+Owner: Fall verwalten, einladen, Rollen vergeben, löschen und Freigaben erteilen.
+Editor: Konten, Dokumente, Verträge und Aufgaben bearbeiten.
+Viewer: Fall ansehen; kein Upload und keine Änderungen.
+Kündigungsfreigabe: Owner oder Editor mit explizit gesetztem Zusatzrecht.
+
+Schrittweise Umsetzung:
+1. Zugriff über gemeinsame authorizeCaseAction()-Funktion prüfen.
+2. Zusätzlich RLS für alle fallbezogenen Tabellen aktivieren.
+3. Storage-Regeln an Fallmitgliedschaft koppeln; Pfadnamen allein reichen nicht.
+4. Signierte Downloadlinks nur nach Prüfung und mit kurzer Gültigkeit erzeugen.
+5. Privilegierten Worker ausschließlich mit serverseitigen Zugangsdaten betreiben;
+   jeder Job prüft Fallstatus und zugehörige Ressourcen erneut.
+6. Einladungsannahme transaktional und gegen Mehrfachverwendung absichern.
+7. Uploads auf Dateigröße, erlaubte Typen und tatsächliche Dateisignatur prüfen;
+   Quarantäne/Malwareprüfung vor weiterer Verarbeitung einplanen.
+8. Lösch- und Aufbewahrungsregeln einschließlich Backups und externer API-Dateien
+   dokumentieren. Falllöschung stoppt zuerst offene Jobs und Freigaben.
+9. Uploads und fremde Webseiten als untrusted data behandeln: enthaltene
+   Anweisungen dürfen keine Aktionen, Freigaben oder Tool-Aufrufe autorisieren.
+
+6. API-VERTRAG
+===============
+Alle fallbezogenen Endpunkte prüfen Sitzung, Mitgliedschaft, Rolle und Nutzdaten.
+Listen sind paginiert. Fehler enthalten Code, verständlichen Text und request_id.
+Zustandsänderungen über Cookie-Sitzungen brauchen Same-Origin-/CSRF-Schutz.
+
+POST   /api/cases
+GET    /api/cases/:caseId
+PATCH  /api/cases/:caseId
+DELETE /api/cases/:caseId                   Kontrollierter Löschauftrag
+
+POST   /api/cases/:caseId/invitations
+POST   /api/invitations/accept
+PATCH  /api/cases/:caseId/members/:userId
+DELETE /api/cases/:caseId/members/:userId
+
+GET/POST /api/cases/:caseId/accounts
+PATCH    /api/cases/:caseId/accounts/:accountId
+
+POST /api/cases/:caseId/documents/upload-url
+POST /api/cases/:caseId/documents/:documentId/complete
+GET  /api/cases/:caseId/documents/:documentId
+POST /api/cases/:caseId/documents/:documentId/review
+GET  /api/cases/:caseId/documents/:documentId/download-url
+
+GET/PATCH /api/cases/:caseId/transactions[/:transactionId]
+GET/POST  /api/cases/:caseId/contracts
+PATCH     /api/cases/:caseId/contracts/:contractId
+POST      /api/cases/:caseId/contracts/:contractId/research
+
+POST /api/cases/:caseId/cancellation-batches/preview
+POST /api/cases/:caseId/cancellation-batches/approve
+GET  /api/cases/:caseId/cancellations
+POST /api/cases/:caseId/cancellations/:id/confirmation
+
+GET/PATCH /api/cases/:caseId/tasks[/:taskId]
+GET/PUT   /api/cases/:caseId/funeral-contact
+POST      /api/cases/:caseId/chat           Antwort als Stream
+POST      /api/webhooks/mail               Signatur prüfen, Events deduplizieren
+
+POST-Jobs liefern HTTP 202 mit job_id. Oberfläche fragt den Status zunächst per
+Polling ab; Echtzeit-Abonnements können später ergänzt werden.
+Freigabe und Versand benötigen Idempotency-Key sowie Datenbank-Constraints.
+
+7. VERARBEITUNGSPIPELINES
+========================
+7.1 Dokumente
+1. Dokumentdatensatz anlegen und autorisierte Upload-URL ausstellen.
+2. Browser lädt direkt in privaten Quarantänebereich hoch.
+3. Complete-Endpunkt prüft Objekt, Typ, Größe und Fallzuordnung.
+4. Worker prüft Dateisicherheit, Hash und bereits vorhandene Uploads.
+5. Text-PDF direkt auslesen; bei Scans/Fotos OCR oder Vision einsetzen.
+6. OpenAI erhält nur erforderliche Inhalte und ein versioniertes Ausgabeschema.
+7. Ergebnis mit Zod prüfen; Beträge, Währung und Datum zusätzlich plausibilisieren.
+8. Herkunft je Feld/Buchung speichern und Vorschau zur Korrektur anzeigen.
+9. Bestätigte Daten in einer Transaktion übernehmen; Analysejob starten.
+
+Jobs: queued -> processing -> ready_for_review -> completed
+Fehler: retry_wait oder failed; verschlüsselte/unlesbare PDFs brauchen klare
+Handlungsanweisungen. Teilimporte werden ausdrücklich als unvollständig markiert.
+
+7.2 Wiederkehrende Buchungen
+1. Namen, Leerzeichen und bekannte Anbieterbezeichnungen normalisieren.
+2. Nach Gläubiger-ID/Mandatsreferenz gruppieren; Empfängername nur als Fallback.
+3. Duplikatkandidaten über Konto, Datum, Betrag und Zahlungsreferenzen erkennen.
+   Zwei echte identische Abbuchungen dürfen nicht blind zusammengelegt werden.
+4. Monatliche, vierteljährliche und jährliche Muster mit Datumstoleranz bewerten.
+5. Variable Beträge zulassen; Betrag allein ist kein Vertragsidentifikator.
+6. Gutschriften, Rücklastschriften, Eigenüberträge und Sparzahlungen gesondert
+   behandeln. Einmalzahlungen nicht automatisch als bestätigt markieren.
+7. Einmal beobachtete Jahreszahlungen nur mit zusätzlichen Hinweisen vorschlagen.
+8. Unsicherheit ausweisen; der Score ist ohne Kalibrierung keine Wahrscheinlichkeit.
+9. Manuelle Korrekturen respektieren und bei erneuter Analyse nicht überschreiben.
+
+Kostenanzeige:
+- Monatlich: Betrag; vierteljährlich: Betrag / 3; halbjährlich: Betrag / 6;
+  jährlich: Betrag / 12. Erst für die Anzeige runden.
+- Variable Zahlungen als Schätzung mit Bezugszeitraum kennzeichnen.
+- Verschiedene Währungen getrennt ausweisen; fehlende Intervalle nicht erfinden.
+
+7.3 Anbieterrecherche
+1. Nur Anbietername und allgemeines Anliegen an die Websuche geben.
+2. Responses API mit web_search verwenden; Quellen-URLs und Abrufdatum speichern.
+3. Offizielle Anbieter-Domain und dort dokumentierten Kontaktweg bevorzugen.
+4. Neue Versandziele bleiben ungeprüft, bis sie fachlich verifiziert sind.
+5. Bei fehlendem Treffer manuellen Prüfauftrag anlegen; keine Adresse erfinden.
+6. Rechercheergebnisse zwischenspeichern und vor produktiver Nutzung aktualisieren.
+7. Ein optionaler eigener URL-Abruf braucht SSRF-Schutz, Redirect-Prüfung und
+   Sperre interner Adressen. Im MVP möglichst Quellen des Suchtools verwenden.
+
+7.4 Kündigungen
+1. Nur bestätigte und bewusst ausgewählte Verträge in die Vorschau aufnehmen.
+2. Weiterführen/Übertragen/Prüfen als Alternativen anbieten.
+3. Berechtigung und anbieterspezifische Nachweise prüfen.
+4. Vorschau zeigt Empfänger, Kanal, Text, Anhänge und enthaltene Verträge.
+5. Nutzer gibt den konkreten Inhalt ausdrücklich frei; Hash und Version speichern.
+6. Geänderter Empfänger, Text oder Anhang erfordert eine neue Freigabe.
+7. Worker prüft Freigabe und Berechtigung vor Versand erneut.
+8. Unterstützte E-Mails senden, Briefe als PDF bereitstellen, Portale als Aufgabe.
+9. Druckbares PDF bedeutet 'vorbereitet'; erst dokumentierter Versand bedeutet
+   'versendet'. Zustellung allein bestätigt keine Vertragsbeendigung.
+10. Bestätigung erfassen, Enddatum prüfen und Vertrag danach als beendet führen.
+
+Status:
+draft -> needs_information -> ready_for_approval -> approved -> sending -> sent
+sent -> confirmation_received -> ended
+Zusatzstatus: failed, delivery_unknown, rejected, withdrawn
+
+Bei unklarem Versandresultat nicht automatisch erneut senden: zunächst mit
+Transportreferenz abgleichen. Sammelaufträge besitzen Einzelresultate; erfolgreich
+versendete Einträge werden bei Wiederholung nicht erneut versendet.
+
+7.5 Chat und Checkliste
+1. Fachlich geprüfte Hilfetexte mit Quellen und Aktualisierungsdatum hinterlegen.
+2. Fallzugriff prüfen und nur benötigte, freigegebene Falldaten bereitstellen.
+3. Lesende Tools eng begrenzen; keine beliebigen SQL- oder Versand-Tools anbieten.
+4. Antworten auf Quellen stützen und Unsicherheit ausdrücklich anzeigen.
+5. Handlungslinks führen zu normalen Formularen; Chat erteilt keine Freigaben.
+6. Token-/Kostenlimits, Rate Limits, Abbruch und Fehlerzustände implementieren.
+
+8. ARBEITSPAKETE IN IMPLEMENTIERUNGSREIHENFOLGE
+==============================================
+Die Rollen bezeichnen Verantwortungsbereiche, keine zwingende Teamgröße.
+Eine Person kann mehrere Rollen übernehmen. Angaben sind grobe Personentage (PT),
+keine Zusage für Kalenderdauer; Fachprüfung und Anbieterantworten kommen hinzu.
+
+AP01 – Anforderungen und Pilotumfang | Produkt + Fachverantwortung | 2–3 PT
+Abhängigkeiten: keine
+- Unterstützte Kontoauszugsformate und zunächst 5–10 Pilotanbieter festlegen.
+- Benötigte Vertretungsnachweise und Versandwege pro Anbieter dokumentieren.
+- Beispielabläufe, Datenschutzrahmen und fachliche Grenzen festhalten.
+Ergebnis: freigegebene Anwendungsfälle und Akzeptanzkriterien.
+Abnahme: Jeder der zwölf ursprünglichen Featurewünsche ist einem Paket zugeordnet.
+
+AP02 – UX und Design | Design + Frontend | 3–4 PT
+Abhängigkeiten: AP01
+- Wireframes für Übersicht, Konten, Dokumentprüfung und Vertragsliste bauen.
+- Detailansicht, Sammelfreigabe, Checkliste, Familie und Bestatter gestalten.
+- Designvariablen für Farben, Schrift, Abstände, Fokus und Status definieren.
+- Kreuz und Rebzweig als dezente SVG-Assets erstellen.
+Ergebnis: klickbarer Ablauf mit mobilen und Desktop-Ansichten.
+Abnahme: Hauptablauf verständlich; Tastaturbedienung und Kontraste berücksichtigt.
+
+AP03 – Repository und Entwicklungsumgebung | Fullstack | 1–2 PT
+Abhängigkeiten: AP01
+- pnpm-Workspace und Next.js-App erzeugen; TypeScript strict aktivieren.
+- Worker und gemeinsame Pakete anlegen; Lint, Format und Tests konfigurieren.
+- .env.example, .gitignore, README und erste CI-Prüfungen erstellen.
+- Lokale Datenbank und synthetische Seed-Daten einrichten.
+Ergebnis: frischer Checkout startet anhand der README reproduzierbar.
+
+AP04 – Datenbank, Auth und Rechte | Backend | 4–6 PT
+Abhängigkeiten: AP03
+- Tabellen, Constraints, Indizes und Migrationen erstellen.
+- Anmeldung, Fallanlage, Mitgliedschaften und sichere Einladungen implementieren.
+- RLS, Storage-Regeln und authorizeCaseAction() umsetzen.
+- Rollenänderung, Widerruf und Audit-Ereignisse ergänzen.
+Abnahme: Fremder Fall bleibt über API, Datenbank und Storage unzugänglich.
+
+AP05 – App-Gerüst | Frontend | 2–3 PT
+Abhängigkeiten: AP02, AP03, Auth-Grundlage aus AP04
+- Navigation und Fallkontext integrieren.
+- Wiederverwendbare Tabellen, Dialoge und Statusanzeigen bauen.
+- Lade-, Leer-, Fehler- und fehlende-Berechtigung-Zustände ergänzen.
+Abnahme: Alle vorgesehenen Rubriken sind responsiv bedienbar.
+
+AP06 – Dokumenten- und Kontenverwaltung | Fullstack | 3–5 PT
+Abhängigkeiten: AP04, AP05
+- Konten anlegen; Auszüge eindeutig einem Konto zuordnen.
+- Sicheren Upload samt Dateiprüfung und Downloadlinks implementieren.
+- Sterbeurkunden und Berechtigungsnachweise getrennt verwalten.
+- Queue, Jobstatus und Wiederanlaufgrundlage aufsetzen.
+Abnahme: Zwei Konten mit mehreren Dokumenten funktionieren ohne Vermischung.
+
+AP07 – Digitalisierung und Korrektur | Backend/KI + Frontend | 5–8 PT
+Abhängigkeiten: AP06
+- PDF-/OCR-Adapter sowie OpenAI-Extraktion mit Schemas implementieren.
+- Buchungslisten und Urkundenfelder mit Herkunft anzeigen.
+- Manuelle Korrektur, Bestätigung und Teilimport-Fehler behandeln.
+- Überlappende Auszüge und Duplikatkandidaten behandeln.
+Abnahme: Testdokumente liefern prüfbare Daten; kritische Felder werden bestätigt.
+
+AP08 – Vertragserkennung | Backend/Fachlogik | 4–6 PT
+Abhängigkeiten: AP07
+- Gruppierung, Rhythmusregeln und Unsicherheitsbewertung implementieren.
+- Begründungen und zugehörige Buchungen je Vorschlag speichern.
+- Bestätigen, Ablehnen, Zusammenführen und manuelles Ergänzen ermöglichen.
+- Monatskosten und mehrere Konten korrekt berücksichtigen.
+Abnahme: Wiederholte Analyse erzeugt keine doppelten Verträge und erhält Korrekturen.
+
+AP09 – Anbieterrecherche | Backend/KI + Fachprüfung | 2–4 PT
+Abhängigkeiten: AP08
+- Websuche-Adapter mit Quellen und Recherchezeitpunkt umsetzen.
+- Offizielle Links anzeigen; Prüfstatus für Versandziele einführen.
+- Pilotanbieter fachlich prüfen und Recherche-Fallback ergänzen.
+Abnahme: Ungeprüfte Suchtreffer können keinen automatischen Versand auslösen.
+
+AP10 – Kündigungsworkflow | Fullstack + Fachprüfung | 5–8 PT
+Abhängigkeiten: AP04, AP08, AP09
+- Vorlagen, Nachweisregeln und Einzel-/Sammelvorschau implementieren.
+- Berechtigungsprüfung, Snapshot-Freigabe und idempotente Queue anbinden.
+- E-Mail, Brief-PDF und Portalaufgabe integrieren.
+- Versandereignisse, Bestätigungen und Wiederholungslogik ergänzen.
+Abnahme: Doppelklick erzeugt keinen Doppelversand; 'versendet' ist nicht 'beendet'.
+
+AP11 – Hilfe, Checkliste und Bestatter | Frontend + Backend/KI | 3–5 PT
+Abhängigkeiten: AP05, AP04; Fallkontext für Chat aus AP08
+- Quellenbasierte Checkliste mit Zuständigkeiten implementieren.
+- Streaming-Chat mit serverseitigem OpenAI-Aufruf und Limits anbinden.
+- Bestatterdaten mit Telefon-/E-Mail-Links und Bearbeitungsformular ergänzen.
+Abnahme: Chat nutzt nur autorisierte Daten und führt keine Kündigungen selbst aus.
+
+AP12 – Dashboard und Familienablauf | Frontend | 2–3 PT
+Abhängigkeiten: AP08, AP10, AP11
+- Kosten, offene Aufgaben und Status auf der Übersicht zusammenführen.
+- Familienrollen und entzogene Zugriffe vollständig in der Oberfläche abbilden.
+- Unsichere Kostenschätzungen und unvollständige Daten sichtbar machen.
+Abnahme: Nutzer erkennen nächste Schritte und Bearbeitungsstand ohne Erklärung.
+
+AP13 – Abnahme, Betrieb und Pilot | QA + Fullstack + Fachverantwortung | 4–6 PT
+Abhängigkeiten: AP01–AP12
+- Sicherheits-, Funktions- und End-to-End-Prüfungen durchführen.
+- Datenschutzhinweise, Dienstleistervereinbarungen und Aufbewahrung prüfen.
+- Backup/Wiederherstellung, Alarmierung und Löschablauf erproben.
+- Fachliche Inhalte und Pilotanbieter vor Produktivbetrieb freigeben.
+- Kleinen Pilot mit betreuten Testfällen durchführen und Fehler beheben.
+Abnahme: Kriterien aus Abschnitt 11 erfüllt; bekannte Grenzen dokumentiert.
+
+Planungsrahmen: ca. 41–63 Personentage zuzüglich externer Fachprüfung und Puffer.
+Mit zwei Entwicklern und punktueller Design-/Fachunterstützung grob 6–9 Wochen;
+bei einer Person entsprechend länger. Nach AP07 anhand realer Extraktionsqualität
+neu schätzen, da unterschiedliche Banklayouts den größten Unsicherheitsfaktor bilden.
+
+9. AUFTEILUNG UND ABHÄNGIGKEITEN
+===============================
+Frontend-Verantwortung:
+  AP02, AP05, Prüfoberfläche AP07, Vertragsansichten AP08,
+  Freigabeansichten AP10, AP12.
+Backend-Verantwortung:
+  AP03, AP04, AP06, Queue, Versand und Statusmodell AP10.
+KI-/Daten-Verantwortung:
+  Extraktion AP07, Erkennung AP08, Recherche AP09, Chat AP11.
+Produkt-/Fach-Verantwortung:
+  AP01, Hilfetexte, Anbieterverifikation, Vorlagen, Pilotabnahme AP13.
+
+Kritischer Pfad:
+AP01 -> AP03 -> AP04 -> AP06 -> AP07 -> AP08 -> AP09 -> AP10 -> AP13
+
+Parallel möglich:
+- AP02 während AP03/AP04.
+- AP05 nach festgelegter Sitzungsschnittstelle.
+- Bestatter und Checkliste aus AP11 nach AP04/AP05.
+- Vertragstabelle mit synthetischen Daten während AP07.
+- Versandadapter mit Testempfängern während AP08/AP09.
+
+Vor paralleler Umsetzung gemeinsame Typen, API-Antworten und Statuswerte festlegen.
+Keine Live-Kundendaten für Frontend-Mocks oder automatisierte Test-Fixtures nutzen.
+
+10. KONKRETE ERSTE SCHRITTE UND KONFIGURATION
+===========================================
+1. Aktuell unterstützte Node.js-LTS-Version, pnpm, Git und für die lokale
+   Supabase-Umgebung Docker installieren.
+2. Repository initialisieren und pnpm-workspace.yaml anlegen.
+3. Mit create-next-app die App unter apps/web anlegen; TypeScript, App Router,
+   ESLint, Tailwind und src-Verzeichnis aktivieren.
+4. Worker und gemeinsame Pakete anlegen; Workspace-Imports konfigurieren.
+5. Supabase-Projekt für Entwicklung erstellen oder lokal starten.
+6. Erste Migration für profiles, cases und case_members schreiben.
+7. Anmeldung und geschützte Fallübersicht fertigstellen.
+8. RLS-Tests für zwei getrennte Familien ausführen.
+9. Erst danach Storage, Upload und externe KI-Verarbeitung hinzufügen.
+10. In jedem Paket Migration, API, Fachlogik und Oberfläche gemeinsam reviewen.
+
+.env.example enthält ausschließlich Platzhalter:
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+SUPABASE_SECRET_KEY=
+DATABASE_URL=
+OPENAI_API_KEY=
+OPENAI_CHAT_MODEL=
+OPENAI_EXTRACTION_MODEL=
+OPENAI_SEARCH_MODEL=
+MAIL_API_KEY=
+MAIL_FROM=
+MAIL_WEBHOOK_SECRET=
+APP_BASE_URL=
+
+Modellnamen konfigurierbar halten und beim Implementieren anhand aktueller
+Dokumentation und eigener Beispieldokumente auswählen. Modellunterstützung für
+PDF/Vision, strukturierte Ausgaben und Websuche getrennt prüfen.
+Servergeheimnisse niemals mit NEXT_PUBLIC_ benennen oder in Client-Code importieren.
+Anbieterspezifische Variablennamen an die tatsächlich verwendete SDK-Version anpassen.
+
+11. VERIFIKATION UND ABNAHME
+===========================
+Fachlogiktests:
+- Monatliche, variable, vierteljährliche und jährliche Abbuchungen.
+- Fehlende Monate, einzelne Jahreszahlung, Rücklastschrift und Eigenübertrag.
+- Überlappende Auszüge und zwei echte gleichlautende Buchungen.
+- Monatskosten, Rundung, Vorzeichen und unterschiedliche Währungen.
+- Manuelle Korrekturen bleiben bei erneuter Verarbeitung erhalten.
+
+Integrations-/Sicherheitstests:
+- Zwei Familien können keine gegenseitigen Ressourcen lesen oder ändern.
+- Viewer kann weder hochladen noch freigeben; entzogene Rechte greifen sofort.
+- Manipulierte case_id/account_id sowie fremde Storage-Pfade werden abgewiesen.
+- Ungültige oder übergroße Dateien gelangen nicht in die Extraktion.
+- API-Key und private Inhalte erscheinen weder im Browser-Bundle noch in Logs.
+- Worker-Ausfall, API-Limit und unklarer Versandstatus erzeugen kontrollierte Fehler.
+- Doppelte Freigabe und doppelte Webhooks verursachen keinen Doppelversand.
+- Inhaltsänderung nach Freigabe sperrt Versand bis zur erneuten Freigabe.
+- Gelöschte/deaktivierte Fälle werden von laufenden Jobs nicht weiterverarbeitet.
+
+End-to-End-Abnahme:
+1. Fall anlegen und Familienmitglied mit begrenzter Rolle einladen.
+2. Sterbeurkundenfoto sowie PDF prüfen und Daten bestätigen.
+3. Zwei Konten mit mehreren Auszügen anlegen.
+4. Vertragsvorschläge prüfen und einen falschen Vorschlag ablehnen.
+5. Kosten und offizielle Anbieterlinks kontrollieren.
+6. Einzelkündigung und Sammelfreigabe mit Testempfängern durchlaufen.
+7. Fehlerfall eines Anbieters bearbeiten, ohne erfolgreiche Einträge erneut zu senden.
+8. Bestätigung hochladen und Vertragsende dokumentieren.
+9. Chat, Checkliste, Bestatterkontakt und mobile Bedienung prüfen.
+10. Zugriff widerrufen sowie Löschung und Wiederherstellung getrennt testen.
+
+Extraktionsqualität auf einem festen, repräsentativen Testdatensatz messen:
+Feldgenauigkeit, ausgelassene Buchungen, fälschliche Duplikate und falsche
+Vertragsvorschläge separat berichten. Zielwerte vor dem Pilot festlegen;
+keine pauschale Genauigkeit versprechen. Kritische Daten bleiben prüfpflichtig.
+
+12. BEREITSTELLUNG UND BETRIEB
+=============================
+1. Web-App und Worker aus demselben versionierten Stand bauen.
+2. Migrationen auf Staging anwenden; synthetischen Referenzfall durchlaufen.
+3. Secrets im Hosting-Secret-Store setzen; getrennte Test-/Produktionsschlüssel.
+4. Maildomain konfigurieren und Webhook-Signaturen prüfen.
+5. In Staging alle Kündigungen an eine Test-Senke umleiten.
+6. Automatischen Versand zunächst per Feature-Flag deaktivieren.
+7. Nach fachlicher Freigabe nur verifizierte Pilotanbieter aktivieren.
+8. Produktivmigrationen rückwärtskompatibel planen; Rollback und Restore festhalten.
+9. Queue-Alter, Fehlerraten, Extraktionskosten und Versandfehler überwachen.
+10. Löschfristen und Backups regelmäßig kontrollieren; Quellen und Vorlagen pflegen.
+
+13. OFFIZIELLE OPENAI-REFERENZEN
+==============================
+Websuche über Responses API:
+https://developers.openai.com/api/docs/guides/tools-web-search
+
+PDF-Dateien als Eingaben:
+https://developers.openai.com/api/docs/guides/pdf-files
+
+Die Referenzen beschreiben API-Fähigkeiten. Die hier definierten Rechte,
+Prüfungen, Quellenkontrollen und Versandfreigaben muss die Anwendung selbst bauen.

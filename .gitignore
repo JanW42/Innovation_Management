@@ -1,0 +1,36 @@
+# Installierte Abhaengigkeiten und Paket-Caches
+node_modules/
+.npm-cache/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Automatisch erzeugte Build- und TypeScript-Dateien
+.next/
+out/
+dist/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# Testergebnisse, Logs und temporaere Dateien
+coverage/
+playwright-report/
+test-results/
+*.log
+.tmp/
+.tmp_*
+
+# Lokale Konfiguration und Zugangsdaten
+.env*
+!.env.example
+
+# Laufzeitdaten bleiben lokal; der Hilfe-Kontext gehoert zum Quellcode
+/data/*
+!/data/context.txt
+
+# Betriebssystem-Dateien
+.DS_Store
+Thumbs.db
+Desktop.ini
